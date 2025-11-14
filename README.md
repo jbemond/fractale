@@ -4,6 +4,8 @@ Les premières versions ont été écrites sur Amstrad CPC, en BASIC puis en ass
 
 Les codes présentés ici ont été testés et compilés sans erreur avec gcc 13.3 sous Linux Debian 13 et avec Code::Blocks 25.03 sous Windows 10.
 
+![alt text](/ppm_export.png "ppm_export.png")
+
 
 # Fractale « plasma » et rendu isométrique — C ANSI C89
 
@@ -179,8 +181,6 @@ Erreurs fréquentes :
 ./iso -x 128 -y 96 -i hmap.txt -o iso.ppm -tw 20 -th 10 -zs 120 -bg 12,12,18
 ```
 
-<<<<<<< HEAD
-Bon rendu !
 =======
 ## 9) Générateur de relief géographique avec niveau d’eau (`geo.c`)
 
@@ -261,5 +261,3 @@ Pipeline direct sans fichier intermédiaire :
 - Pour un rendu isométrique plus propre, utiliser un lissage modéré : `-f 1` ou `-f 2`.
 - Pour davantage de relief, augmenter `-a` et rapprocher `-k` de 1.
 - Conserver la graine `-s` et les paramètres pour une reproductibilité parfaite.
-
->>>>>>> 419d005 (sync total)
