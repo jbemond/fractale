@@ -1,0 +1,16 @@
+# artefacts de build
+*.o
+*.a
+*.so
+*.exe
+*.out
+*.log
+*.swp
+*.tmp
+*.gch
+build/
+dist/
+# binaires générés ici
+fractale
+plasma
+iso

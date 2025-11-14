@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Visionneuse PPM locale</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 16px; }
+  .dropzone {
+    border: 2px dashed #888; border-radius: 12px; padding: 24px; text-align: center; margin-bottom: 16px;
+  }
+  .dropzone.drag { background: #f0f6ff; border-color: #3b82f6; }
+  #out { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  canvas { image-rendering: pixelated; border: 1px solid #ddd; border-radius: 8px; }
+  .meta { color: #444; }
+  .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+  label { font-size: 14px; }
+</style>
+</head>
+<body>
+  <h1>Visionneuse PPM</h1>
+  <p>Ouvrez un fichier PPM P6 (sortie de iso.c ou geo.c). Vous pouvez aussi glisser le fichier sur la zone ci‑dessous.</p>
+  <div class="controls">
+    <input type="file" id="file" accept=".ppm,.pnm,.pgm,.pbm,application/octet-stream">
+    <label><input type="checkbox" id="fit"> Ajuster au conteneur</label>
+    <button id="savePng" type="button">Exporter en PNG</button>
+  </div>
+  <div id="drop" class="dropzone">Glissez ici votre fichier .ppm</div>
+  <div id="out">
+    <canvas id="cv"></canvas>
+    <div class="meta" id="meta"></div>
+  </div>
+<script>
+(function(){
+  const fileInput = document.getElementById('file');
+  const drop = document.getElementById('drop');
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  const meta = document.getElementById('meta');
+  const fit = document.getElementById('fit');
+  const savePng = document.getElementById('savePng');
+
+  function readTokens(u8, i) {
+    // Renvoie [tokens[], index après le dernier token, stopIndex]
+    const tokens = [];
+    const len = u8.length;
+    function skipWSAndComments() {
+      while (i < len) {
+        const c = u8[i];
+        if (c === 35) { // '#'
+          while (i < len && u8[i] !== 10 && u8[i] !== 13) i++;
+        } else if (c === 9 || c === 10 || c === 13 || c === 32) {
+          i++;
+        } else break;
+      }
+    }
+    function readToken() {
+      skipWSAndComments();
+      let start = i;
+      while (i < len) {
+        const c = u8[i];
+        if (c === 35 || c === 9 || c === 10 || c === 13 || c === 32) break;
+        i++;
+      }
+      if (i === start) return null;
+      return new TextDecoder().decode(u8.subarray(start, i));
+    }
+    // magic, w, h, maxval
+    for (let k = 0; k < 4; k++) {
+      const t = readToken();
+      if (t === null) break;
+      tokens.push(t);
+    }
+    // Après maxval, sauter un unique bloc d'espaces de tête vers les pixels
+    while (i < len) {
+      const c = u8[i];
+      if (c === 9 || c === 10 || c === 13 || c === 32) i++; else break;
+    }
+    return [tokens, i];
+  }
+
+  function parsePPM(buf) {
+    const u8 = new Uint8Array(buf);
+    let i = 0;
+    const [tokens, pixStart] = readTokens(u8, i);
+    if (!tokens || tokens.length < 4) throw new Error("Entête PPM incomplet");
+    const magic = tokens[0];
+    const w = parseInt(tokens[1], 10);
+    const h = parseInt(tokens[2], 10);
+    const maxv = parseInt(tokens[3], 10);
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) {
+      throw new Error("Dimensions invalides");
+    }
+    if (!Number.isFinite(maxv) || maxv <= 0) throw new Error("Maxval invalide");
+    if (magic !== 'P6' && magic !== 'P3') {
+      throw new Error("Format non supporté (" + magic + "). Utilisez P6.");
+    }
+    let pixels;
+    if (magic === 'P6') {
+      const need = w * h * 3;
+      if (pixStart + need > u8.length) throw new Error("Données insuffisantes");
+      const raw = u8.subarray(pixStart, pixStart + need);
+      if (maxv === 255) {
+        pixels = raw;
+      } else {
+        // Remodeler sur 0..255
+        pixels = new Uint8ClampedArray(need);
+        for (let k = 0; k < need; k++) pixels[k] = Math.round((raw[k] / maxv) * 255);
+      }
+    } else { // P3 ASCII (optionnel)
+      // Relire tout en tant que texte et extraire les nombres
+      const text = new TextDecoder().decode(u8);
+      const nums = text.replace(/#[^\n\r]*/g, ' ').match(/\d+/g);
+      if (!nums) throw new Error("Pas de données dans P3");
+      // les 4 premiers sont magic? w h maxv. On cherche les 3*w*h suivants
+      const startIdx = text.indexOf(tokens[3]);
+      let idx = startIdx + tokens[3].length;
+      const arr = [];
+      const re = /\d+/g;
+      re.lastIndex = idx;
+      let m;
+      while ((m = re.exec(text)) !== null) {
+        arr.push(parseInt(m[0], 10));
+      }
+      if (arr.length < w*h*3) throw new Error("Données P3 insuffisantes");
+      pixels = new Uint8ClampedArray(w*h*3);
+      const scale = 255 / maxv;
+      for (let k = 0; k < w*h*3; k++) pixels[k] = Math.round(arr[k] * scale);
+    }
+    return {w, h, pixels, maxv, magic};
+  }
+
+  function drawPPM(ppm) {
+    cv.width = ppm.w;
+    cv.height = ppm.h;
+    const img = ctx.createImageData(ppm.w, ppm.h);
+    const dst = img.data;
+    const src = ppm.pixels;
+    let j = 0;
+    for (let i = 0; i < src.length; i += 3) {
+      dst[j++] = src[i];
+      dst[j++] = src[i+1];
+      dst[j++] = src[i+2];
+      dst[j++] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    meta.textContent = `Format: ${ppm.magic}  Taille: ${ppm.w} × ${ppm.h}  Maxval: ${ppm.maxv}`;
+    if (fit.checked) {
+      cv.style.width = Math.min(1024, ppm.w) + 'px';
+      cv.style.height = 'auto';
+    } else {
+      cv.style.width = '';
+      cv.style.height = '';
+    }
+  }
+
+  function handleFile(f) {
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const ppm = parsePPM(reader.result);
+        drawPPM(ppm);
+      } catch (e) {
+        alert("Erreur lecture PPM: " + e.message);
+      }
+    };
+    reader.readAsArrayBuffer(f);
+  }
+
+  fileInput.addEventListener('change', (e)=> handleFile(e.target.files[0]));
+  drop.addEventListener('dragover', (e)=> { e.preventDefault(); drop.classList.add('drag'); });
+  drop.addEventListener('dragleave', ()=> drop.classList.remove('drag'));
+  drop.addEventListener('drop', (e)=> {
+    e.preventDefault(); drop.classList.remove('drag');
+    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+    handleFile(f);
+  });
+
+  fit.addEventListener('change', ()=> {
+    // Repeindre avec la même image en gardant le canvas
+    // Ici on se contente de changer le style; si besoin on peut recharger
+    if (cv.width && cv.height) {
+      if (fit.checked) {
+        cv.style.width = Math.min(1024, cv.width) + 'px';
+        cv.style.height = 'auto';
+      } else {
+        cv.style.width = '';
+        cv.style.height = '';
+      }
+    }
+  });
+
+  savePng.addEventListener('click', ()=> {
+    if (!cv.width || !cv.height) { alert("Aucune image"); return; }
+    cv.toBlob((blob)=> {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'ppm_export.png';
+      a.click();
+      setTimeout(()=> URL.revokeObjectURL(a.href), 500);
+    }, 'image/png');
+  });
+})();
+</script>
+</body>
+</html>
